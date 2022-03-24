@@ -537,3 +537,7 @@ FodyWeavers.xsd
 # Additional files built by Visual Studio
 
 # End of https://www.toptal.com/developers/gitignore/api/visualstudio,dotnetcore,aspnetcore
+*serviceDependencies*
+*ServiceDependencies*
+/HelloMe/HelloMe/Properties/serviceDependencies.helloMeFeu - Zip Deploy.json
+/HelloMe/HelloMe/Properties/ServiceDependencies
