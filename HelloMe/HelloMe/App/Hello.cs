@@ -1,7 +1,9 @@
 using HelloMe.Interface;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.Azure.EventHubs;
 using Microsoft.Azure.WebJobs;
+using Microsoft.Azure.WebJobs.Extensions.DurableTask;
 using Microsoft.Azure.WebJobs.Extensions.Http;
 using Microsoft.Extensions.Logging;
 using Newtonsoft.Json;
@@ -18,18 +20,21 @@ namespace HelloMe.App
         private readonly IHelloCustomSingleton customSingleton2;
         private readonly IHelloCustomScoped customScoped;
         private readonly IHelloCustomScoped customScoped2;
+        private readonly IConfig config;
         private readonly IHelloCustomTransient customTransient;
         private readonly IHelloCustomTransient customTransient2;
 
         public Hello(IHelloCustomSingleton customSingleton, IHelloCustomSingleton customSingleton2,
                      IHelloCustomTransient customTransient, IHelloCustomTransient customTransient2,
-                     IHelloCustomScoped customScoped, IHelloCustomScoped customScoped2
+                     IHelloCustomScoped customScoped, IHelloCustomScoped customScoped2,
+                     IConfig config
                      )
         {
             this.customSingleton = customSingleton;
             this.customSingleton2 = customSingleton2;
             this.customScoped = customScoped;
             this.customScoped2 = customScoped2;
+            this.config = config;
             this.customTransient = customTransient;
             this.customTransient2 = customTransient2;
         }        
@@ -88,6 +93,108 @@ namespace HelloMe.App
             ILogger log)
         {
             return BuildResponse(req, customTransient, customTransient2);
+        }
+        #endregion
+
+        #region HANDSON-EVENT_HUB
+        [FunctionName("helloEH")]
+        public static async Task<IActionResult> ForwardMessageEH([HttpTrigger(AuthorizationLevel.Function, "post", Route = "forwardHello")] HttpRequest req,
+            [EventHub("%ehName%", Connection = "EHConnectionString")] IAsyncCollector<string> outputEvents,            
+            ILogger log)
+        {
+            string name = req.Query["name"];
+            string requestBody = await new StreamReader(req.Body).ReadToEndAsync();
+            dynamic data = JsonConvert.DeserializeObject(requestBody);
+            name ??= data?.name;
+
+            string responseMessage = string.IsNullOrEmpty(name)
+                ? "Hello anonymous. What's your name?"
+                : $@"Hello, {name}. It's a test \o/";
+
+            await outputEvents.AddAsync(responseMessage);
+            
+            return new OkObjectResult($"Message '{responseMessage}' has sent successfuly");
+        }
+        #endregion
+
+        #region HANDSON-DURABLE
+        [FunctionName("helloDurable")]
+        public static async Task<IActionResult> HelloDurable([HttpTrigger(AuthorizationLevel.Function, "post", Route = "helloDurable")] HttpRequest req,
+            [DurableClient] IDurableOrchestrationClient starter,
+            ILogger log)
+        {
+            string name = req.Query["name"];
+            string requestBody = await new StreamReader(req.Body).ReadToEndAsync();
+            dynamic data = JsonConvert.DeserializeObject(requestBody);
+            name ??= data?.name;
+
+            ///Starting new orchatrator
+            var instanceId = await starter.StartNewAsync("Orchestrator", name);
+
+
+            HttpManagementPayload httpManagement = starter.CreateHttpManagementPayload(instanceId);
+            log.LogWarning(JsonConvert.SerializeObject(httpManagement));
+
+            ///Waiting for the orchestrator to complete
+            while (
+                ((await starter.GetStatusAsync(instanceId)).RuntimeStatus == OrchestrationRuntimeStatus.Pending) ||
+                ((await starter.GetStatusAsync(instanceId)).RuntimeStatus == OrchestrationRuntimeStatus.Running)
+                )
+            {
+                await Task.Delay(500);
+            }
+
+            return new OkObjectResult($"Hello Durable has finished");
+        }
+
+        [FunctionName("Orchestrator")]
+        public async Task OrchestratorSTR(
+                [OrchestrationTrigger] IDurableOrchestrationContext context, ILogger log)
+        {
+            var name = context.GetInput<string>();
+            try
+            {
+                var message = await context.CallActivityAsync<string>("DurableFormatMessage", name);
+                var result = await context.CallActivityAsync<string>("DurableSendMessage", message);
+                log.LogInformation($"Durable has complted - {result}");
+            }
+            catch (Exception e)
+            {
+                log.LogError($"Error orchestrating the task to send message => {e.Message}");
+            }
+        }
+        [FunctionName("DurableFormatMessage")]
+        public async Task<string> DurableFormatMessage([ActivityTrigger] string name, ILogger log)
+        {
+            await Task.Delay(30000);
+            string responseMessage = $@"Hello, {name}. It's a durable test ";
+            return responseMessage;
+        }
+
+        [FunctionName("DurableSendMessage")]
+        public async Task<string> DurableSendMessage([ActivityTrigger] string message, ILogger log)
+        {
+            try
+            {
+                var data = Encoding.UTF8.GetBytes(message);
+                var connStr = config.EHConnectionString;
+                var builder = new EventHubsConnectionStringBuilder(connStr)
+                {
+                    TransportType = TransportType.Amqp,
+                    OperationTimeout = TimeSpan.FromSeconds(120)
+                };
+                var ehClient = EventHubClient.CreateFromConnectionString(builder.ToString());
+                await ehClient.SendAsync(new EventData(data));
+                await ehClient.CloseAsync();
+
+                return "Success";
+            }
+            catch (Exception e)
+            {
+                log.LogCritical(e.Message);
+            }
+
+            return "Failed";
         }
         #endregion
     }

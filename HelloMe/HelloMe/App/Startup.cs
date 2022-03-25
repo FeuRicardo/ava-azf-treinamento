@@ -16,7 +16,13 @@ namespace fhello1.App
             builder.Services.AddScoped<IHelloCustomScoped, HelloCustomScoped>();
             builder.Services.AddTransient<IHelloCustomTransient, HelloCustomTransient>();
 
-
+            builder.Services
+                .AddOptions<IConfig>()
+                .Configure<IConfiguration>((settings, configuration) => {
+                    configuration
+                    .GetSection("Config")
+                    .Bind(settings);
+    });
         }
     }
 }
