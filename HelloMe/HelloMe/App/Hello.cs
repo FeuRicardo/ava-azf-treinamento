@@ -28,14 +28,14 @@ namespace HelloMe.App
         public Hello(IHelloCustomSingleton customSingleton, IHelloCustomSingleton customSingleton2,
                      IHelloCustomTransient customTransient, IHelloCustomTransient customTransient2,
                      IHelloCustomScoped customScoped, IHelloCustomScoped customScoped2,
-                     IOptions<Config> config
+                     IConfig config
                      )
         {
             this.customSingleton = customSingleton;
             this.customSingleton2 = customSingleton2;
             this.customScoped = customScoped;
             this.customScoped2 = customScoped2;
-            this.config = config.Value;
+            this.config = config;
             this.customTransient = customTransient;
             this.customTransient2 = customTransient2;
         }
