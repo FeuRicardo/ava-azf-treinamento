@@ -6,6 +6,7 @@ using Microsoft.Azure.WebJobs;
 using Microsoft.Azure.WebJobs.Extensions.DurableTask;
 using Microsoft.Azure.WebJobs.Extensions.Http;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
 using Newtonsoft.Json;
 using System;
 using System.IO;
@@ -27,17 +28,17 @@ namespace HelloMe.App
         public Hello(IHelloCustomSingleton customSingleton, IHelloCustomSingleton customSingleton2,
                      IHelloCustomTransient customTransient, IHelloCustomTransient customTransient2,
                      IHelloCustomScoped customScoped, IHelloCustomScoped customScoped2,
-                     IConfig config
+                     IOptions<Config> config
                      )
         {
             this.customSingleton = customSingleton;
             this.customSingleton2 = customSingleton2;
             this.customScoped = customScoped;
             this.customScoped2 = customScoped2;
-            this.config = config;
+            this.config = config.Value;
             this.customTransient = customTransient;
             this.customTransient2 = customTransient2;
-        }        
+        }
 
         #region HANDSON
         [FunctionName("hello")]
@@ -99,7 +100,7 @@ namespace HelloMe.App
         #region HANDSON-EVENT_HUB
         [FunctionName("helloEH")]
         public static async Task<IActionResult> ForwardMessageEH([HttpTrigger(AuthorizationLevel.Function, "post", Route = "forwardHello")] HttpRequest req,
-            [EventHub("%ehName%", Connection = "EHConnectionString")] IAsyncCollector<string> outputEvents,            
+            [EventHub("%ehName%", Connection = "EHConnectionString")] IAsyncCollector<string> outputEvents,
             ILogger log)
         {
             string name = req.Query["name"];
@@ -112,7 +113,7 @@ namespace HelloMe.App
                 : $@"Hello, {name}. It's a test \o/";
 
             await outputEvents.AddAsync(responseMessage);
-            
+
             return new OkObjectResult($"Message '{responseMessage}' has sent successfuly");
         }
         #endregion
@@ -129,22 +130,22 @@ namespace HelloMe.App
             name ??= data?.name;
 
             ///Starting new orchatrator
-            var instanceId = await starter.StartNewAsync("Orchestrator", name);
+            var instanceId = await starter.StartNewAsync("Orchestrator");
 
 
             HttpManagementPayload httpManagement = starter.CreateHttpManagementPayload(instanceId);
             log.LogWarning(JsonConvert.SerializeObject(httpManagement));
 
             ///Waiting for the orchestrator to complete
-            while (
-                ((await starter.GetStatusAsync(instanceId)).RuntimeStatus == OrchestrationRuntimeStatus.Pending) ||
-                ((await starter.GetStatusAsync(instanceId)).RuntimeStatus == OrchestrationRuntimeStatus.Running)
-                )
-            {
-                await Task.Delay(500);
-            }
+            //while (
+            //    ((await starter.GetStatusAsync(instanceId)).RuntimeStatus == OrchestrationRuntimeStatus.Pending) ||
+            //    ((await starter.GetStatusAsync(instanceId)).RuntimeStatus == OrchestrationRuntimeStatus.Running)
+            //    )
+            //{
+            //    await Task.Delay(500);
+            //}
 
-            return new OkObjectResult($"Hello Durable has finished");
+            return new OkObjectResult(httpManagement);
         }
 
         [FunctionName("Orchestrator")]
@@ -163,6 +164,7 @@ namespace HelloMe.App
                 log.LogError($"Error orchestrating the task to send message => {e.Message}");
             }
         }
+
         [FunctionName("DurableFormatMessage")]
         public async Task<string> DurableFormatMessage([ActivityTrigger] string name, ILogger log)
         {
@@ -195,6 +197,42 @@ namespace HelloMe.App
             }
 
             return "Failed";
+        }
+        #endregion
+
+        #region DURABLE-WAIT_FOR_EVENT
+        [FunctionName("BudgetApproval")]
+        public static async Task Run([OrchestrationTrigger] IDurableOrchestrationContext context, ILogger log)
+        {
+            bool approved = await context.WaitForExternalEvent<bool>("Approval");
+            if (approved)
+            {
+                log.LogWarning("approval granted - do the approved action");
+            }
+            else
+            {
+                log.LogWarning("approval denied - send a notification");
+            }
+        }
+
+        [FunctionName("DurableApproveRefuse")]
+        public static async Task DurableEvent(
+            [HttpTrigger(AuthorizationLevel.Function, "post", Route = "DurableApproveRefuse/{instance}/{status}")] HttpRequest req, string instance, bool status,            
+            [DurableClient] IDurableOrchestrationClient client)
+        {
+            await client.RaiseEventAsync(instance, "Approval", status);
+        }
+
+        [FunctionName("DurableRequestApproval")]
+        public static async Task<IActionResult> DurableWaitApproval(
+            [HttpTrigger(AuthorizationLevel.Function, "get", Route = "DurableRequestApproval")] HttpRequest req,
+            [DurableClient] IDurableOrchestrationClient client, ILogger log)
+        {
+            var instance = await client.StartNewAsync("BudgetApproval");
+            string message = $"ID of your request => {instance}";
+            log.LogWarning(message);
+
+            return new OkObjectResult(message);
         }
         #endregion
     }
